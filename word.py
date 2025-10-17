@@ -1,6 +1,6 @@
 from io import BytesIO
 from collections import OrderedDict
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 
 # Librerías para manejo de documentos Word (python-docx)
 from docx import Document
@@ -435,22 +435,354 @@ def numerar_titulos_existentes(doc: Document) -> None:
         reemplazar_parrafo(original, nuevo)
 
 
+# ============================================================================
+# CLASE DOCUMENTBUILDER - Patrón Builder para construcción fluida de documentos
+# ============================================================================
+
+class DocumentBuilder:
+    """
+    Constructor fluido de documentos Word con configuración centralizada.
+
+    Permite crear documentos mediante encadenamiento de métodos y mantiene
+    un historial de operaciones para debugging.
+
+    Ejemplo básico:
+        >>> builder = DocumentBuilder()
+        >>> builder.titulo("Mi Reporte", 1) \\
+        ...        .parrafo("Introducción al documento.") \\
+        ...        .vinetas(["Punto 1", "Punto 2"]) \\
+        ...        .guardar("reporte.docx")
+
+    Ejemplo con configuración personalizada:
+        >>> config = {
+        ...     'fuente_titulo': 'Arial',
+        ...     'color_titulo': RGBColor(0xFF, 0x00, 0x00),
+        ...     'margin_top': Inches(0.5)
+        ... }
+        >>> builder = DocumentBuilder(config=config)
+        >>> builder.indice() \\
+        ...        .titulo("Capítulo 1", 1) \\
+        ...        .guardar("documento.docx")
+    """
+
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        """
+        Inicializa el constructor con configuración personalizable.
+
+        Args:
+            config: Diccionario con configuración opcional. Las claves soportadas incluyen:
+                - page_height, page_width: Dimensiones de página (Inches)
+                - margin_top, margin_bottom, margin_left, margin_right: Márgenes (Inches)
+                - fuente_titulo, fuente_texto: Nombres de fuentes
+                - color_titulo, color_subtitulo: Colores RGB
+                - size_titulo_1, size_titulo_2, size_titulo_3, size_texto: Tamaños (Pt)
+                - ancho_tabla_default: Ancho por defecto de tablas (float)
+        """
+        self.doc = Document()
+        self.config = self._configuracion_default()
+
+        if config:
+            self.config.update(config)
+
+        self._configurar_pagina()
+        self._historial: List[str] = []
+
+    def _configuracion_default(self) -> Dict[str, Any]:
+        """
+        Retorna la configuración por defecto del documento.
+
+        Returns:
+            Diccionario con todos los parámetros de configuración por defecto.
+        """
+        return {
+            # Dimensiones página A4
+            'page_height': Inches(11.69),
+            'page_width': Inches(8.27),
+            'margin_top': Inches(1),
+            'margin_bottom': Inches(1),
+            'margin_left': Inches(1),
+            'margin_right': Inches(1),
+
+            # Fuentes
+            'fuente_titulo': 'Lora',
+            'fuente_texto': 'Segoe UI Light',
+
+            # Colores corporativos
+            'color_titulo': RGBColor(0x2E, 0x3F, 0x5F),
+            'color_subtitulo': RGBColor(0x4F, 0x4F, 0x4F),
+
+            # Tamaños de fuente
+            'size_titulo_1': Pt(14),
+            'size_titulo_2': Pt(12),
+            'size_titulo_3': Pt(11),
+            'size_texto': Pt(8),
+            'size_pie_figura': Pt(6),
+
+            # Tablas
+            'ancho_tabla_default': 6.0,
+            'size_tabla_header': Pt(6.5),
+            'size_tabla_datos': Pt(7),
+        }
+
+    def _configurar_pagina(self) -> None:
+        """Aplica la configuración de página al documento."""
+        section = self.doc.sections[0]
+        section.page_height = self.config['page_height']
+        section.page_width = self.config['page_width']
+        section.top_margin = self.config['margin_top']
+        section.bottom_margin = self.config['margin_bottom']
+        section.left_margin = self.config['margin_left']
+        section.right_margin = self.config['margin_right']
+
+    def titulo(self, texto: str, nivel: int = 1) -> 'DocumentBuilder':
+        """
+        Agrega un título al documento con formato jerárquico.
+
+        Args:
+            texto: Texto del título
+            nivel: Nivel jerárquico (1=principal, 2=secundario, 3=terciario)
+
+        Returns:
+            self para permitir encadenamiento de métodos
+
+        Example:
+            >>> builder.titulo("Capítulo 1", 1)
+            >>> builder.titulo("Sección 1.1", 2)
+            >>> builder.titulo("Subsección 1.1.1", 3)
+        """
+        agregar_titulo(self.doc, texto, nivel)
+        self._historial.append(f"Título nivel {nivel}: {texto}")
+        return self
+
+    def parrafo(self, texto: str) -> 'DocumentBuilder':
+        """
+        Agrega un párrafo justificado al documento.
+
+        Args:
+            texto: Contenido del párrafo
+
+        Returns:
+            self para permitir encadenamiento de métodos
+        """
+        agregar_parrafo(self.doc, texto)
+        self._historial.append(f"Párrafo: {texto[:50]}..." if len(texto) > 50 else f"Párrafo: {texto}")
+        return self
+
+    def tabla(self, df, titulo: Optional[str] = None, con_merge: bool = False,
+              group_cols: Optional[List[str]] = None) -> 'DocumentBuilder':
+        """
+        Inserta una tabla desde un DataFrame de pandas.
+
+        Args:
+            df: DataFrame con los datos
+            titulo: Título opcional para la tabla
+            con_merge: Si True, usa insertar_tabla_con_merge
+            group_cols: Columnas para agrupar (solo si con_merge=True)
+
+        Returns:
+            self para permitir encadenamiento de métodos
+
+        Raises:
+            ValueError: Si df está vacío o no es válido
+        """
+        try:
+            if df.empty:
+                self.parrafo("[Tabla vacía: sin datos para mostrar]")
+                self._historial.append("Tabla: vacía")
+                return self
+
+            if con_merge:
+                insertar_tabla_con_merge(self.doc, df, titulo, group_cols)
+                self._historial.append(f"Tabla con merge: {len(df)} filas × {len(df.columns)} cols")
+            else:
+                insertar_tabla(self.doc, df, titulo)
+                self._historial.append(f"Tabla: {len(df)} filas × {len(df.columns)} cols")
+        except Exception as e:
+            self.parrafo(f"[Error al insertar tabla: {str(e)}]")
+            self._historial.append(f"Error en tabla: {str(e)}")
+
+        return self
+
+    def figura(self, figura, titulo: Optional[str] = None,
+               pie: Optional[str] = None) -> 'DocumentBuilder':
+        """
+        Inserta una figura (matplotlib) en el documento.
+
+        Args:
+            figura: Objeto Figure de matplotlib
+            titulo: Título opcional sobre la figura
+            pie: Texto de pie de figura
+
+        Returns:
+            self para permitir encadenamiento de métodos
+        """
+        try:
+            insertar_figura(self.doc, figura, titulo, pie)
+            self._historial.append(f"Figura: {titulo if titulo else 'sin título'}")
+        except Exception as e:
+            self.parrafo(f"[Error al insertar figura: {str(e)}]")
+            self._historial.append(f"Error en figura: {str(e)}")
+
+        return self
+
+    def vinetas(self, items: List[str], nivel: int = 1,
+                espacio_antes: Pt = Pt(4),
+                espacio_despues: Pt = Pt(4)) -> 'DocumentBuilder':
+        """
+        Agrega una lista con viñetas (guiones).
+
+        Args:
+            items: Lista de textos para las viñetas
+            nivel: Nivel de indentación (1=sin indent, 2=indent, etc.)
+            espacio_antes: Espaciado antes de cada ítem
+            espacio_despues: Espaciado después de cada ítem
+
+        Returns:
+            self para permitir encadenamiento de métodos
+        """
+        agregar_viñetas(self.doc, items, nivel, espacio_antes, espacio_despues)
+        self._historial.append(f"Viñetas: {len(items)} items (nivel {nivel})")
+        return self
+
+    def salto_pagina(self) -> 'DocumentBuilder':
+        """
+        Inserta un salto de página.
+
+        Returns:
+            self para permitir encadenamiento de métodos
+        """
+        insertar_salto_pagina(self.doc)
+        self._historial.append("Salto de página")
+        return self
+
+    def indice(self, titulo: str = "Índice") -> 'DocumentBuilder':
+        """
+        Inserta una tabla de contenidos (TOC) automática.
+
+        Args:
+            titulo: Título de la sección de índice
+
+        Returns:
+            self para permitir encadenamiento de métodos
+
+        Note:
+            El índice debe actualizarse manualmente en Word (clic derecho > Actualizar campos)
+        """
+        insertar_indice(self.doc, titulo)
+        self._historial.append(f"Índice: {titulo}")
+        return self
+
+    def advertencia_actualizacion(self) -> 'DocumentBuilder':
+        """
+        Agrega advertencia sobre actualización de campos en Word.
+
+        Returns:
+            self para permitir encadenamiento de métodos
+        """
+        agregar_advertencia_actualizacion(self.doc)
+        self._historial.append("Advertencia de actualización")
+        return self
+
+    def numerar_titulos(self) -> 'DocumentBuilder':
+        """
+        Numera automáticamente todos los títulos existentes (1., 1.1, 1.1.1, etc.).
+
+        Returns:
+            self para permitir encadenamiento de métodos
+        """
+        numerar_titulos_existentes(self.doc)
+        self._historial.append("Numeración de títulos aplicada")
+        return self
+
+    def guardar(self, ruta: str, verbose: bool = True) -> None:
+        """
+        Guarda el documento en la ruta especificada.
+
+        Args:
+            ruta: Ruta del archivo .docx de salida
+            verbose: Si True, imprime información del guardado
+        """
+        try:
+            guardar_documento(self.doc, ruta)
+            if verbose:
+                print(f"[OK] Documento guardado en: {ruta}")
+                print(f"[OK] Operaciones realizadas: {len(self._historial)}")
+        except Exception as e:
+            print(f"[ERROR] Error al guardar documento: {e}")
+            raise
+
+    def obtener_historial(self) -> List[str]:
+        """
+        Retorna una copia del historial de operaciones.
+
+        Returns:
+            Lista de strings describiendo cada operación realizada
+        """
+        return self._historial.copy()
+
+    def mostrar_historial(self) -> 'DocumentBuilder':
+        """
+        Imprime el historial de operaciones en consola.
+
+        Returns:
+            self para permitir encadenamiento de métodos
+        """
+        print("\n=== Historial de Operaciones ===")
+        for i, op in enumerate(self._historial, 1):
+            print(f"{i:2d}. {op}")
+        print(f"\nTotal: {len(self._historial)} operaciones\n")
+        return self
+
+    def obtener_documento(self) -> Document:
+        """
+        Retorna el objeto Document interno para manipulación avanzada.
+
+        Returns:
+            Objeto Document de python-docx
+
+        Warning:
+            Modificar directamente el documento puede afectar el historial
+        """
+        return self.doc
+
+
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Generador de documento Word (A4) con utilidades de formato.")
     parser.add_argument("salida", help="Ruta del archivo .docx de salida, p.ej.: informe.docx")
+    parser.add_argument("--builder", action="store_true", help="Usar DocumentBuilder en lugar de funciones")
     args = parser.parse_args()
 
-    doc = crear_documento_a4()
-    insertar_indice(doc)
-    agregar_advertencia_actualizacion(doc)
-    agregar_titulo(doc, "Resumen de Proyecto", 1)
-    agregar_parrafo(doc, "Este es un ejemplo mínimo de documento generado desde funcion.py.")
-    agregar_titulo(doc, "Sección", 2)
-    agregar_viñetas(doc, ["Ítem 1", "Ítem 2", "Ítem 3"]) 
+    if args.builder:
+        # EJEMPLO CON DOCUMENTBUILDER (Método recomendado)
+        print("Generando documento con DocumentBuilder...")
 
-    guardar_documento(doc, args.salida)
-    print(f"Documento guardado en: {args.salida}")
+        builder = DocumentBuilder()
+        builder.indice() \
+               .advertencia_actualizacion() \
+               .titulo("Resumen de Proyecto", 1) \
+               .parrafo("Este es un ejemplo mínimo de documento generado con DocumentBuilder.") \
+               .titulo("Sección Principal", 2) \
+               .vinetas(["Ítem 1", "Ítem 2", "Ítem 3"]) \
+               .salto_pagina() \
+               .titulo("Conclusiones", 1) \
+               .parrafo("El DocumentBuilder permite crear documentos de forma más limpia y fluida.") \
+               .mostrar_historial() \
+               .guardar(args.salida)
+    else:
+        # EJEMPLO CON FUNCIONES (Método tradicional)
+        print("Generando documento con funciones tradicionales...")
+
+        doc = crear_documento_a4()
+        insertar_indice(doc)
+        agregar_advertencia_actualizacion(doc)
+        agregar_titulo(doc, "Resumen de Proyecto", 1)
+        agregar_parrafo(doc, "Este es un ejemplo mínimo de documento generado desde funciones.")
+        agregar_titulo(doc, "Sección", 2)
+        agregar_viñetas(doc, ["Ítem 1", "Ítem 2", "Ítem 3"])
+
+        guardar_documento(doc, args.salida)
+        print(f"Documento guardado en: {args.salida}")
 
 
