@@ -1,400 +1,418 @@
 import pandas as pd
 import openai
+from typing import List, Union, Optional, Dict, Any
 import os
-import json
-import tiktoken
-import time
 from datetime import datetime
+import json
+import logging
 from dotenv import load_dotenv
-from tqdm import tqdm
-from typing import Dict, Any
-import re
-import concurrent.futures
-import threading
 
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Cargar variables de entorno desde .env
+# Cargar variables de entorno
 load_dotenv()
 
-# Configurar la clave API de OpenAI
-env_api_key = os.getenv('API_KEY')
-if not env_api_key:
-    raise ValueError("No se encontró la variable de entorno API_KEY. Asegúrate de que tu archivo .env está configurado correctamente.")
-openai.api_key = env_api_key
+# Configurar la clave API de OpenAI desde variable de entorno
+openai.api_key = os.getenv("API_KEY")
 
-# Métricas Acumulativas y lock para concurrencia
-total_input_tokens = 0
-total_output_tokens = 0
+if not openai.api_key:
+    raise ValueError("API_KEY no encontrada en el archivo .env")
+
+# Lista global para registrar tokens (considera usar un sistema de logging más robusto)
 registro_tokens = []
-token_lock = threading.Lock()
-
-# Constants for token limits
-DEFAULT_MAX_TOKENS = 9000
-# Calculate maximum tokens for the prompt: total limit minus what we allocate for completion
-MAX_INPUT_TOKENS = 4000
 
 # Diccionario de precios por modelo (USD por 1M tokens)
 PRECIOS_MODELOS = {
+    'gpt-4.1': {'input': 2.00, 'output': 8.00},
+    'gpt-4.1-mini': {'input': 0.40, 'output': 1.60},
+    'gpt-4.1-nano': {'input': 0.10, 'output': 0.40},
+    'gpt-4.5-preview': {'input': 75.00, 'output': 150.00},
+    'gpt-4o': {'input': 2.50, 'output': 10.00},
     'gpt-4o-mini': {'input': 0.15, 'output': 0.60},
-    'gpt-4o': {'input': 5.00, 'output': 15.00},
+    'gpt-4o-mini-realtime-preview': {'input': 0.60, 'output': 2.40},
+    'gpt-4o-realtime-preview': {'input': 5.00, 'output': 20.00},
+    'gpt-4o-audio-preview': {'input': 2.50, 'output': 10.00},
+    'gpt-4o-mini-audio-preview': {'input': 0.15, 'output': 0.60},
+    'gpt-4o-search-preview': {'input': 2.50, 'output': 10.00},
+    'gpt-4o-mini-search-preview': {'input': 0.15, 'output': 0.60},
+    'o1': {'input': 15.00, 'output': 60.00},
+    'o1-pro': {'input': 150.00, 'output': 600.00},
+    'o3-pro': {'input': 20.00, 'output': 80.00},
+    'o3': {'input': 2.00, 'output': 8.00},
+    'o3-deep-research': {'input': 10.00, 'output': 40.00},
+    'o4-mini': {'input': 1.10, 'output': 4.40},
+    'o4-mini-deep-research': {'input': 2.00, 'output': 8.00},
+    'o3-mini': {'input': 1.10, 'output': 4.40},
+    'o1-mini': {'input': 1.10, 'output': 4.40},
+    'codex-mini-latest': {'input': 1.50, 'output': 6.00},
+    'computer-use-preview': {'input': 3.00, 'output': 12.00},
+    'gpt-image-1': {'input': 5.00, 'output': 1.25},
 }
 
-PROMPT_CATEGORIZACION='''
-**Tarea de Análisis y Categorización de Feedback**
-**1. Objetivo:**
-Tu tarea es analizar un lote de respuestas de estudiantes y asignar a cada una la categoría más adecuada de la guía de codificación proporcionada. Debes basar tu análisis en el contexto de la pregunta (`question_name`) y el contenido de la respuesta (`answer`).
-**2. Formato de Entrada:**
-Recibirás los datos como un array de objetos JSON. Cada objeto contiene un `id` único, `question_name` y `answer`.
+# Prompts del sistema almacenados como constantes
+SYSTEM_PROMPT = """
+Eres un analista de datos educativos especializado en la redacción de informes técnicos profesionales.
 
-**3. Guía de Codificación Unificada:**
-Etiquetado Múltiple: Una misma respuesta puede (y a menudo debe) ser asignada a varias categorías si toca diferentes temas. Ejemplo: "El profesor explica bien pero la plataforma es confusa" se codifica tanto en la categoría de docente como en la de plataforma.
+CONTEXTO:
+Debes redactar secciones específicas de un informe sobre resultados de proyectos educativos, basándote únicamente en los datos proporcionados.
 
+DIRECTRICES ESTRICTAS:
 
----
+1. OBJETIVIDAD ABSOLUTA:
+   - Describe únicamente lo que muestran los datos, sin interpretaciones causales
+   - Evita correlaciones no fundamentadas (ej: "X indica éxito del programa")
+   - No atribuyas significado sin evidencia directa
+   - Usa lenguaje neutral y descriptivo
 
-**Eje: Contenido y Materiales**
+2. LENGUAJE PROFESIONAL:
+   - Emplea terminología técnica apropiada
+   - Redacta en tercera persona
+   - Utiliza voz pasiva cuando sea pertinente
+   - Mantén un tono formal y académico
 
-1.  **Contenido claro y fácil de entender**
-    *   **Enfoque:** La claridad y estructura de los materiales de aprendizaje (actividades, lecturas, videos, etc.), no la explicación del docente.
-    *   **Inclusiones:** "Entendí todo", "las instrucciones eran claras", "el material es fácil de seguir", "el programa está bien organizado".
-    *   **Exclusiones:** Comentarios específicos sobre la habilidad del docente para explicar (eso corresponde a la categoría 7).
+3. ESTRUCTURA DE REDACCIÓN:
+   - Para introducción: Contextualiza el proyecto y sus objetivos medibles
+   - Para resúmenes: Sintetiza hallazgos clave sin valoraciones
+   - Para observaciones: Presenta tendencias y patrones identificables
+   - Para conclusiones: Resume datos presentados sin extrapolaciones
 
-2.  **Contenido útil y aplicable a mi carrera**
-    *   **Enfoque:** El valor práctico y la relevancia del conocimiento para el futuro profesional, académico o personal del estudiante.
-    *   **Inclusiones:** "Me servirá para mi trabajo", "es útil para mi carrera", "lo puedo aplicar en mi emprendimiento", "aprendo cosas para la vida".
-    *   **Exclusiones:** Comentarios generales sobre si le "gusta" el contenido sin mencionar su utilidad (eso es categoría 3).
+4. PROHIBICIONES EXPLÍCITAS:
+   - NO inferir causalidad sin evidencia
+   - NO hacer juicios de valor sobre los datos
+   - NO relacionar variables demográficas con éxito/fracaso
+   - NO incluir recomendaciones no solicitadas
+   - NO usar adjetivos valorativos (exitoso, deficiente, prometedor)
 
-3.  **Contenido entretenido y motivador**
-    *   **Enfoque:** El disfrute, el engagement y el interés que genera el contenido o las actividades.
-    *   **Inclusiones:** "Me divertí", "la clase fue chévere", "las actividades eran interesantes", "me gusta el tema".
-    *   **Exclusiones:** Si el elogio es específico a la dinámica creada por el docente (ej: "el profe hace la clase divertida"), priorizar la categoría del docente (7 u 8).
+5. FORMATO DE RESPUESTA:
+   - Párrafos concisos de 3-5 oraciones
+   - Incluye datos específicos cuando sea relevante (porcentajes, cifras)
 
-4.  **Contenido confuso o difícil de seguir**
-    *   **Enfoque:** Dificultad intelectual para comprender los temas, conceptos o instrucciones de las actividades. No se refiere a problemas técnicos.
-    *   **Inclusiones:** "No entendí el tema", "me pareció muy complicado", "me perdí", "la información era densa".
-    *   **Exclusiones:** Problemas con la plataforma (usar 15), quejas sobre el ritmo del docente (usar 10), o falta de interés (usar 5 o 6).
+EJEMPLO DE REDACCIÓN APROPIADA:
+Incorrecto: "La alta participación femenina (70%) demuestra el éxito del programa"
+Correcto: "La distribución por género muestra una participación del 70% de mujeres y 30% de hombres"
 
-5.  **Contenido aburrido o monótono**
-    *   **Enfoque:** Quejas de aburrimiento o falta de dinamismo relacionadas con el contenido o la estructura de la clase en general.
-    *   **Inclusiones:** "La clase es aburrida", "siempre hacemos lo mismo", "me da sueño", "es muy monótono".
-    *   **Exclusiones:** Si la crítica apunta directamente a la metodología del docente (ej: "el profesor es aburrido"), usar la categoría 10.
+"""
 
-6.  **Contenido sin relevancia para mis objetivos**
-    *   **Enfoque:** El estudiante siente que el contenido no se alinea con sus metas o intereses profesionales o personales.
-    *   **Inclusiones:** "Esto no me sirve para mi carrera", "no lo usaré en el futuro", "esperaba aprender otra cosa".
-    *   **Exclusiones:** Simples quejas de "no me gusta" (eso es categoría 20).
+FORMATO_SALIDA_BASICO = "No uses markdown, solo texto plano. No uses titulos, solo párrafos. No uses emojis. No uses saltos de linea. Porcentajes con 1 decimal."
 
----
+def _detectar_modelo_base(modelo: str) -> str:
+    """
+    Detecta el modelo base a partir del nombre completo del modelo.
 
-**Eje: Docente**
+    Args:
+        modelo (str): Nombre completo del modelo.
 
-7.  **Buen nivel de explicación del docente**
-    *   **Enfoque:** La habilidad del docente para explicar, comunicar ideas de forma clara y facilitar la comprensión.
-    *   **Inclusiones:** "Explica muy bien", "es muy claro", "se le entiende todo", "hace que lo difícil parezca fácil".
-    *   **Exclusiones:** Elogios a su paciencia o amabilidad (usar 9) o a su conocimiento general (usar 8).
+    Returns:
+        str: Modelo base encontrado en el diccionario de precios.
+    """
+    if modelo in PRECIOS_MODELOS:
+        return modelo
 
-8.  **Docente experto y con dominio del tema**
-    *   **Enfoque:** La percepción del estudiante sobre el profundo conocimiento y la experiencia del docente en la materia.
-    *   **Inclusiones:** "Sabe mucho", "domina el tema", "se nota que tiene experiencia", "es un experto".
-    *   **Exclusiones:** Comentarios sobre su habilidad para explicar (usar 7). Un docente puede saber mucho pero no explicar bien.
+    # Buscar coincidencia parcial ordenada por longitud (más específico primero)
+    modelos_ordenados = sorted(PRECIOS_MODELOS.keys(), key=len, reverse=True)
+    for key in modelos_ordenados:
+        if modelo.startswith(key):
+            return key
 
-9.  **Docente amable y paciente al resolver dudas**
-    *   **Enfoque:** La actitud y disposición del docente para ayudar, su trato y su paciencia.
-    *   **Inclusiones:** "Resuelve todas mis dudas", "es muy paciente", "nos ayuda mucho", "es muy amable y cercano".
-    *   **Exclusiones:** Elogios a su capacidad de explicación general (usar 7).
-
-10. **Docente con método poco dinámico o poco claro**
-    *   **Enfoque:** Crítica a la metodología, ritmo o claridad de la enseñanza del docente.
-    *   **Inclusiones:** "Explica muy rápido", "no se le entiende", "su clase es monótona", "se desvía del tema", "no es dinámico".
-    *   **Exclusiones:** Quejas sobre el contenido en sí (usar 4 o 6) o sobre su disposición a ayudar (usar 12).
-
-11. **Docente que demuestra falta de conocimiento**
-    *   **Enfoque:** El estudiante percibe que el profesor tiene lagunas en su conocimiento o no domina un tema.
-    *   **Inclusiones:** "El profe no sabía la respuesta", "parecía inseguro", "tuvo que buscarlo en Google".
-    *   **Exclusiones:** Dificultad para explicar un tema que sí domina (usar 10).
-
-12. **Docente poco dispuesto a ayudar**
-    *   **Enfoque:** Crítica a la actitud del docente, su falta de paciencia o su poca disposición para resolver dudas.
-    *   **Inclusiones:** "No ayuda", "no responde las preguntas", "se enoja si le preguntamos", "no tiene paciencia".
-
----
-
-**Eje: Técnico y Plataforma**
-
-13. **Problemas técnicos**
-    *   **Enfoque:** Fallos objetivos de hardware o conectividad.
-    *   **Inclusiones:** "Mala conexión a internet", "no se escuchaba el micrófono", "la cámara no funcionaba", "se trababa la llamada".
-    *   **Exclusiones:** Problemas de usabilidad de la plataforma (usar 15).
-
-14. **Plataforma intuitiva y rica en recursos**
-    *   **Enfoque:** La experiencia de usuario con la plataforma (Campus CTC, etc.) es positiva, fácil y fluida.
-    *   **Inclusiones:** "La plataforma es fácil de usar", "es muy intuitiva", "encuentro todo rápido", "es sencilla y clara".
-    *   **Exclusiones:** Elogios al contenido que está *dentro* de la plataforma (usar 1, 2 o 3).
-
-15. **Plataforma confusa o con fallos técnicos**
-    *   **Enfoque:** La plataforma es difícil de navegar, poco intuitiva o presenta errores de funcionamiento.
-    *   **Inclusiones:** "No entiendo la plataforma", "es complicada", "me pierdo", "no funciona el botón", "se cuelga".
-    *   **Exclusiones:** Dificultad para entender el contenido académico (usar 4).
-
----
-
-**Eje: Percepción General y Sugerencias**
-
-16. **Proyecto motivador**
-    *   **Enfoque:** El estudiante considera que el programa en su conjunto fue una experiencia que estimuló su creatividad e interés.
-    *   **Inclusiones:** "Fue un reto que me gustó", "me motivó a crear", "fue un proyecto muy interesante".
-    *   **Exclusiones:** Comentarios positivos sobre partes específicas (usar categorías de contenido o docente).
-
-17. **Proyecto desmotivador**
-    *   **Enfoque:** El estudiante expresa frustración o confusión general con los objetivos o la ejecución del programa.
-    *   **Inclusiones:** "No entendí el propósito del proyecto", "fue muy complicado de realizar", "me sentí perdido".
-    *   **Exclusiones:** Críticas a componentes específicos (usar categorías de contenido, docente o plataforma).
-
-18. **Sugerencias y propuestas de mejora**
-    *   **Enfoque:** Comentarios que proponen cambios, críticas constructivas o ideas para mejorar cualquier aspecto del programa.
-    *   **Inclusiones:** "Deberían añadir más ejemplos", "sugiero que las clases duren más", "sería mejor si fuera presencial", "le falta profundizar en X tema".
-    *   **Exclusiones:** Quejas puras sin una propuesta implícita (ej: "no me gustó" va en 20).
-
-19. **Comentarios positivos generales**
-    *   **Enfoque:** Expresiones de satisfacción general sin dar detalles específicos. Se usa cuando no hay suficiente información para clasificar en una categoría más precisa.
-    *   **Inclusiones:** "Me gusta mucho", "excelente", "estoy satisfecho", "todo bien", "perfecto".
-    *   **Exclusiones:** Cualquier comentario que dé un mínimo detalle sobre *qué* es bueno (ej: "explican bien" o "buen profe" -> 7).
-
-20. **Comentarios negativos generales**
-    *   **Enfoque:** Expresiones de insatisfacción general sin detalles específicos.
-    *   **Inclusiones:** "No me gusta", "no me sirve", "es malo", "no estoy conforme".
-    *   **Exclusiones:** Cualquier comentario que dé un mínimo detalle sobre *qué* es malo (ej: "es aburrido" -> 5).
-
-21. **Otro**
-    *   **Enfoque:** Usar **únicamente** como último recurso para respuestas que son imposibles de clasificar.
-    *   **Inclusiones:** "porque si", "no tengo", "normal", "ninguna", "mi experiencia", "N/A", respuestas en blanco, o comentarios completamente fuera de contexto (ej: "me gusta el fútbol").
-    *   **Exclusiones:** Cualquier respuesta que tenga un mínimo de intención o sentimiento interpretable.
+    logger.warning(f"Modelo '{modelo}' no encontrado en PRECIOS_MODELOS. Usando precios por defecto.")
+    return modelo
 
 
-**4. Formato de Salida Obligatorio:**
-Tu respuesta DEBE ser únicamente un array de objetos JSON válido, sin texto adicional antes o después. Cada objeto debe contener el `id` original y la `category` que asignaste.
-**Ejemplo de Salida:**
-```json
-[
-  {
-    "id": 1,
-    "category": ["Buen nivel de explicación del docente"]
-  },
-  {
-    "id": 2,
-    "category": ["Docente poco dispuesto a ayudar", "Contenido claro y fácil de entender"]
-  }
-]
-```
+def guardar_registro_tokens(archivo: str = "registro_tokens.csv") -> None:
+    """
+    Guarda el registro de tokens en un archivo CSV.
+
+    Args:
+        archivo (str): Nombre del archivo donde guardar el registro.
+    """
+    try:
+        df = pd.DataFrame(registro_tokens)
+        # Si el archivo existe, agregamos; si no, creamos uno nuevo
+        if os.path.exists(archivo):
+            df_existente = pd.read_csv(archivo)
+            df = pd.concat([df_existente, df], ignore_index=True)
+        df.to_csv(archivo, index=False)
+        logger.info(f"Registro de tokens guardado en {archivo}")
+    except Exception as e:
+        logger.error(f"Error al guardar registro de tokens: {str(e)}")
 
 
-'''
+def call_gpt(
+    prompt: str,
+    modelo: str = "gpt-4o-mini",
+    max_tokens: int = 1500,
+    temperature: float = 0.7,
+    system_prompt: Optional[str] = None
+) -> str:
+    """
+    Llama a la API de OpenAI. Por defecto usa gpt-4o-mini.
 
-# Helper: crear codificador y contar tokens
-ENCODING = tiktoken.encoding_for_model("gpt-4o-mini")
+    Args:
+        prompt (str): Texto del prompt a enviar.
+        modelo (str): Modelo de OpenAI a utilizar.
+        max_tokens (int): Máximo de tokens en la respuesta.
+        temperature (float): Control de creatividad (0.0-1.0).
+        system_prompt (Optional[str]): Prompt del sistema personalizado.
 
-def count_tokens(text: str) -> int:
-    return len(ENCODING.encode(text))
+    Returns:
+        str: Respuesta del modelo.
 
-# GPT API call
-def call_gpt(prompt: str, modelo: str = "gpt-4o-mini", max_tokens: int = DEFAULT_MAX_TOKENS, temperature: float = 0.5) -> dict:
+    Raises:
+        ValueError: Si el prompt está vacío.
+    """
+    if not prompt or not prompt.strip():
+        raise ValueError("El prompt no puede estar vacío")
+
+    if system_prompt is None:
+        system_prompt = SYSTEM_PROMPT
+
     try:
         response = openai.chat.completions.create(
             model=modelo,
             messages=[
-                {"role": "system", "content": PROMPT_CATEGORIZACION},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=max_tokens,
-            temperature=temperature,
-            response_format={"type": "json_object"},
+            temperature=temperature
         )
-        return response
-    except openai.OpenAIError as e:
-        print(f"Error en la API de OpenAI: {e}")
-        return None
-    except Exception as e:
-        print(f"Error inesperado: {e}")
-        return None
 
-# Agrupar registros por tamaño en tokens de manera eficiente
-def split_batches_fast(df: pd.DataFrame) -> list:
-    batches = []
-    current_batch = []
-    current_token_count = count_tokens(PROMPT_CATEGORIZACION) + count_tokens("Por favor, categoriza el siguiente lote de respuestas: []")
+        result = response.choices[0].message.content.strip()
 
-    for idx, row in df.iterrows():
-        record = {"id": int(idx), "question_name": row['question_name'], "answer": row['answer']}
-        record_json = json.dumps(record, ensure_ascii=False)
-        record_tokens = count_tokens(record_json) + 2  # 2 extra por coma y corchetes
+        # Registrar uso de tokens
+        usage = response.usage
+        input_tokens = usage.prompt_tokens
+        output_tokens = usage.completion_tokens
 
-        if current_token_count + record_tokens > MAX_INPUT_TOKENS:
-            batches.append(current_batch)
-            current_batch = [record]
-            current_token_count = count_tokens(PROMPT_CATEGORIZACION) + count_tokens("Por favor, categoriza el siguiente lote de respuestas: []") + record_tokens
-        else:
-            current_batch.append(record)
-            current_token_count += record_tokens
-
-    if current_batch:
-        batches.append(current_batch)
-
-    return batches
-
-def extract_json_string(llm_output: str) -> str:
-    # 1. Quitar etiquetas de bloque de código
-    for fence in ["```json", "```", "``` js", "``` txt"]:
-        if fence in llm_output:
-            llm_output = llm_output.replace(fence, "")
-    # 2. Strips finales
-    return llm_output.strip()
-
-
-JSON_ARRAY_RE = re.compile(r"(\[.*\])", re.DOTALL)
-
-def find_json_array(text: str) -> str:
-    match = JSON_ARRAY_RE.search(text)
-    if not match:
-        raise ValueError("No se encontró un array JSON en la respuesta")
-    return match.group(1)
-
-def get_json_chunk(llm_output: str) -> str:
-    cleaned = extract_json_string(llm_output)
-    return find_json_array(cleaned)
-
-
-# Categorizar el DataFrame en lotes optimizados por tokens
-def categorizar_dataframe(df: pd.DataFrame,
-                          model: str = "gpt-4o-mini",
-                          max_token: int = DEFAULT_MAX_TOKENS,
-                          parallel_calls: int = 1,
-                          verbose: bool = False,
-                          progress: bool = True) -> pd.DataFrame:
-    """
-    Categoriza un DataFrame de respuestas en paralelo usando OpenAI.
-
-    Args:
-        df: DataFrame con columnas 'question_name' y 'answer'.
-        model: Modelo OpenAI a usar.
-        max_token: Máximo tokens de respuesta.
-        parallel_calls: Número máximo de llamadas concurrentes (1 = secuencial, hasta 10).
-    """
-    global total_input_tokens, total_output_tokens, registro_tokens
-
-    if 'question_name' not in df.columns or 'answer' not in df.columns:
-        raise ValueError("El DataFrame debe contener 'question_name' y 'answer'.")
-
-    registro_tokens.clear()
-    batches = split_batches_fast(df)
-    all_results = []
-
-    # Worker para procesar un lote
-    def process_batch(lote):
-        nonlocal all_results
-        try:
-            if verbose:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] ⏳ Empezando lote en hilo {threading.current_thread().name}")
-            input_json = json.dumps(lote, ensure_ascii=False)
-            prompt_lote = f"Por favor, categoriza el siguiente lote de respuestas: {input_json}"
-            response = call_gpt(prompt=prompt_lote, modelo=model, max_tokens=max_token)
-            if not response:
-                return pd.DataFrame()
-
-            # Actualizar métricas bajo lock
-            usage = response.usage
-            with token_lock:
-                registro_tokens.append({
-                    'fecha_hora': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'modelo': response.model,
-                    'input_tokens': usage.prompt_tokens,
-                    'output_tokens': usage.completion_tokens,
-                })
-
-            llm_output = response.choices[0].message.content.strip()
-            llm_output = get_json_chunk(llm_output)
-            parsed = json.loads(llm_output)
-            if verbose:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ Terminó lote en hilo {threading.current_thread().name}")
-            return pd.DataFrame(parsed)
-
-        except Exception as e:
-            try:
-                tqdm.write(f"Error en lote: {e}")
-            except Exception:
-                print(f"Error en lote: {e}")
-            return pd.DataFrame()
-
-    # Ejecutar secuencial o paralelo según parámetro
-    if parallel_calls > 1:
-        max_workers = min(parallel_calls, 10)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(process_batch, lote) for lote in batches]
-            for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Categorizando lotes en paralelo", leave=False, dynamic_ncols=True, disable=not progress):
-                df_batch = future.result()
-                if not df_batch.empty:
-                    all_results.append(df_batch)
-    else:
-        for lote in tqdm(batches, desc="Categorizando lotes secuencialmente", leave=False, dynamic_ncols=True, disable=not progress):
-            df_batch = process_batch(lote)
-            if not df_batch.empty:
-                all_results.append(df_batch)
-
-    # Concatenar resultados y mapear categorías
-    if all_results:
-        combined = pd.concat(all_results)
-        if verbose:
-            print("¿Hay IDs duplicados en los resultados?", combined['id'].duplicated().any())
-        result_df = pd.concat(all_results).set_index('id')
-    else:
-        result_df = pd.DataFrame(columns=['category'])
-
-    df_out = df.copy()
-    result_df = result_df[~result_df.index.duplicated(keep='first')]
-
-    df_out['categoria'] = df.index.map(lambda i: result_df.at[i, 'category'] if i in result_df.index else [])
-    return df_out
-
-
-def guardar_metricas(filepath: str = 'metricas_uso_openai.csv'):
-    """
-    Guarda solo la fila con el total de la ejecución actual.
-    """
-    if not registro_tokens:
-        print("No hay métricas nuevas para guardar.")
-        return
-
-    metricas_df = pd.DataFrame(registro_tokens)
-    # Tomar el modelo de la última ejecución registrada
-    modelo = 'gpt-4o-mini'
-
-    # Buscar el modelo exacto en el diccionario de precios
-    precios = PRECIOS_MODELOS.get(modelo)
-    # Si no está, buscar la versión "padre" (por ejemplo, 'gpt-4o' para 'gpt-4o-mini')
-    if precios is None:
-        modelo_base = '-'.join(modelo.split('-')[:2])
+        modelo_base = _detectar_modelo_base(modelo)
         precios = PRECIOS_MODELOS.get(modelo_base, {'input': 0, 'output': 0})
 
-    # Crear solo la fila del total de la ejecución actual
-    total_ejecucion = {
-        'fecha_hora': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'modelo': modelo,
-        'input_tokens': metricas_df['input_tokens'].sum(),
-        'output_tokens': metricas_df['output_tokens'].sum(),
+        cost_usd = (input_tokens * precios['input'] + output_tokens * precios['output']) / 1000000
+
+        registro_tokens.append({
+            'fecha_hora': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'modelo': modelo,
+            'input_tokens': input_tokens,
+            'output_tokens': output_tokens,
+            'costo_usd': cost_usd,
+        })
+
+        logger.info(f"Tokens usados - Input: {input_tokens}, Output: {output_tokens}, Costo: ${cost_usd:.6f}")
+
+        return result
+
+    except openai.OpenAIError as e:
+        logger.error(f"Error en la API de OpenAI: {str(e)}")
+        raise
+    except Exception as e:
+        logger.error(f"Error inesperado: {str(e)}")
+        raise
+
+def analyze_dataframe(
+    df: pd.DataFrame,
+    seccion: str = "observacion",
+    contexto: str = "",
+    tokens: int = 1000,
+    modelo: str = "gpt-4o-mini"
+) -> str:
+    """
+    Analiza un DataFrame y genera texto profesional para informes educativos.
+
+    Args:
+        df (pd.DataFrame): DataFrame a analizar.
+        seccion (str): Tipo de sección del informe ('introduccion', 'resumen', 'observacion', 'conclusion').
+        contexto (str): Contexto adicional sobre los datos (nombre del proyecto, período, etc.).
+        tokens (int): Máximo de tokens en la respuesta.
+        modelo (str): Modelo de OpenAI a utilizar.
+
+    Returns:
+        str: Texto generado para el informe.
+
+    Raises:
+        ValueError: Si el DataFrame está vacío o la sección no es válida.
+    """
+    if df.empty:
+        raise ValueError("El DataFrame está vacío. No hay datos para analizar.")
+    
+    secciones_validas = ["introduccion", "resumen", "observacion", "conclusion"]
+    if seccion not in secciones_validas:
+        raise ValueError(f"Sección debe ser una de: {', '.join(secciones_validas)}")
+
+    # Convertir DataFrame a JSON
+    try:
+        json_str = df.to_json(orient="records", lines=False, force_ascii=False)
+    except Exception as e:
+        logger.error(f"Error al convertir DataFrame a JSON: {str(e)}")
+        raise
+
+    # Obtener información básica del DataFrame para contexto
+    info_basica = f"""
+Dimensiones: {df.shape[0]} registros, {df.shape[1]} variables
+Columnas: {', '.join(df.columns.tolist())}
+"""
+
+    # Instrucciones específicas según la sección
+    instrucciones_seccion = {
+        "introduccion": "Redacta una introducción contextual basada en los datos disponibles. Menciona el alcance del análisis y las variables principales.",
+        "resumen": "Sintetiza los hallazgos principales observables en los datos. Incluye cifras clave y distribuciones relevantes.",
+        "observacion": "Describe patrones, tendencias y distribuciones identificables en los datos. Presenta porcentajes y valores cuando sea pertinente.",
+        "conclusion": "Resume los datos presentados de manera objetiva, destacando las características principales del conjunto de datos."
     }
 
-    # Guardar solo la fila del total
-    total_ejecucion_df = pd.DataFrame([total_ejecucion])
-    total_ejecucion_df['costo_usd'] = (
-        (total_ejecucion_df['input_tokens'] * precios['input']) +
-        (total_ejecucion_df['output_tokens'] * precios['output'])
-    ) / 1_000_000
+    prompt = f"""Eres un analista de datos educativos especializado en la redacción de informes técnicos profesionales.
 
-    if os.path.exists(filepath):
-        total_ejecucion_df.to_csv(filepath, mode='a', header=False, index=False)
-    else:
-        total_ejecucion_df.to_csv(filepath, mode='w', header=True, index=False)
+CONTEXTO DEL PROYECTO:
+{contexto if contexto else "Análisis de datos de proyecto educativo"}
 
-    print(f"Solo el total de la ejecución guardado en '{filepath}'")
-    print(f"Modelo: {total_ejecucion['modelo']}")
-    print(f"Tokens enviados: {total_ejecucion['input_tokens']}")
-    print(f"Tokens recibidos: {total_ejecucion['output_tokens']}")
+INFORMACIÓN DEL DATASET:
+{info_basica}
+
+TAREA:
+{instrucciones_seccion[seccion]}
+
+DIRECTRICES ESTRICTAS:
+1. OBJETIVIDAD: Describe únicamente lo observable en los datos, sin interpretaciones causales
+2. NO inferir éxito/fracaso basándote en distribuciones demográficas
+3. NO establecer correlaciones no evidenciadas
+4. USA lenguaje técnico, formal y neutral
+5. INCLUYE valores específicos cuando sea relevante (porcentajes, totales)
+6. EVITA adjetivos valorativos (exitoso, deficiente, prometedor)
+7. REDACTA en tercera persona
+
+PROHIBICIONES:
+- NO uses frases como "esto indica/sugiere/demuestra éxito"
+- NO relaciones género, edad u otras variables demográficas con calidad
+- NO hagas recomendaciones
+- NO uses expresiones especulativas
+
+DATOS A ANALIZAR:
+{json_str}
+
+FORMATO DE SALIDA:
+- Máximo 3 párrafos
+- Cada párrafo de 2-4 oraciones
+- Lenguaje profesional y técnico
+- Sin bullets ni listas
+- Texto corrido y formal
+
+Genera únicamente el texto solicitado para la sección '{seccion}' del informe."""
+
+    return call_gpt(prompt, modelo=modelo, max_tokens=tokens)
+
+
+def insight_list(
+    data_list: List[Union[int, float, str]],
+    proyectos: Optional[pd.DataFrame] = None,
+    introduccion: str = "",
+    tokens: int = 2000,
+    modelo: str = "gpt-4o-mini"
+) -> Dict[str, Any]:
+    """
+    Analiza una lista y genera insights estructurados en formato JSON.
+
+    Args:
+        data_list (List): Lista de datos a analizar.
+        proyectos (Optional[pd.DataFrame]): DataFrame con información de proyectos.
+        introduccion (str): Introducción o contexto del análisis.
+        tokens (int): Máximo de tokens en la respuesta.
+        modelo (str): Modelo de OpenAI a utilizar.
+
+    Returns:
+        Dict[str, Any]: Diccionario con los insights estructurados.
+
+    Raises:
+        ValueError: Si la lista está vacía o si el JSON retornado es inválido.
+    """
+    if not data_list:
+        raise ValueError("La lista de datos está vacía. No hay datos para analizar.")
+
+    # Convertir lista a string
+    list_str = ", ".join(str(item) for item in data_list)
+
+    json_str = ""
+    if proyectos is not None and not proyectos.empty:
+        try:
+            json_str = proyectos.to_json(orient="records", lines=False, force_ascii=False)
+        except Exception as e:
+            logger.warning(f"Error al convertir proyectos a JSON: {str(e)}")
+            json_str = ""
+
+    # Construir prompt base
+    base_prompt = f"""Basándote en la siguiente introducción, información de proyectos y conclusiones parciales, genera un resumen estructurado en formato JSON que destaque los principales hallazgos e insights por dimensión o categoría.
+
+Introducción:
+{introduccion}
+
+Proyectos:
+{json_str}
+
+Conclusiones parciales:
+{list_str}
+
+Formato de salida (devuelve solo un JSON válido):
+{{
+  "Contexto General del Diagnóstico": [
+    "Insight 1",
+    "Insight 2",
+    "Insight 3"
+  ],
+  "Hallazgos Clave y Correlaciones Relevantes": {{
+    "<Nombre de la categoría>": [
+      "Insight 1",
+      "Insight 2",
+      "Insight 3",
+      "Implicación: ..."
+    ]
+  }},
+  "Retos Priorizados Identificados": [
+    {{
+      "Eje": "Nombre del eje",
+      "Reto": "Descripción del reto",
+      "Relevancia": "Razón por la cual es importante"
+    }}
+  ],
+  "Otras Secciones Relevantes": {{
+    "Título de la sección": [
+      "Insight 1",
+      "Insight 2",
+      "Insight 3"
+    ]
+  }},
+  "Relevancia del Programa": [
+    "Punto 1 sobre impacto del programa",
+    "Punto 2",
+    "Punto 3"
+  ]
+}}
+
+Instrucciones:
+- No incluyas ningún texto fuera del JSON, asegúrate de que el json sea válido.
+- Si alguna sección no aplica, omítela (no dejes campos vacíos).
+- Usa nombres de categoría o sección que surjan naturalmente del análisis.
+- Redacta en estilo claro y sintético.
+- Las implicaciones deben reflejar posibles líneas de acción o interpretaciones del dato."""
+
+    response = call_gpt(base_prompt, modelo=modelo, max_tokens=tokens)
+
+    # Validar que el JSON retornado sea válido
+    try:
+        # Intentar extraer JSON del texto (por si incluye markdown)
+        json_text = response.strip()
+        if json_text.startswith("```json"):
+            json_text = json_text.split("```json")[1].split("```")[0].strip()
+        elif json_text.startswith("```"):
+            json_text = json_text.split("```")[1].split("```")[0].strip()
+
+        resultado = json.loads(json_text)
+        logger.info("JSON de insights validado correctamente")
+        return resultado
+    except json.JSONDecodeError as e:
+        logger.error(f"Error al parsear JSON de insights: {str(e)}")
+        logger.error(f"Respuesta recibida: {response}")
+        # Retornar el texto como fallback
+        return {"error": "JSON inválido", "respuesta_original": response}
