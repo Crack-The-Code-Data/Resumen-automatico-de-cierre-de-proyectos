@@ -22,8 +22,8 @@ def crear_documento_a4() -> Document:
     section.page_width = Inches(8.27)
     section.top_margin = Inches(1)
     section.bottom_margin = Inches(1)
-    section.left_margin = Inches(1)
-    section.right_margin = Inches(1)
+    section.left_margin = Inches(0.5)
+    section.right_margin = Inches(0.5)
     return doc
 
 
