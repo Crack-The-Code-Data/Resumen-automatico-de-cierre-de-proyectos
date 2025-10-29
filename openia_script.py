@@ -250,45 +250,21 @@ def analyze_dataframe(
         logger.error(f"Error al convertir DataFrame a JSON: {str(e)}")
         raise
 
-    # Obtener información básica del DataFrame para contexto
-    info_basica = f"""
-Dimensiones: {df.shape[0]} registros, {df.shape[1]} variables
-Columnas: {', '.join(df.columns.tolist())}
-"""
-
     # Instrucciones específicas según la sección
     instrucciones_seccion = {
-        "introduccion": "Redacta una introducción contextual basada en los datos disponibles. Menciona el alcance del análisis y las variables principales.",
+        "introduccion": "Redacta una introducción contextual para la seccion basada en los datos disponibles",
         "resumen": "Sintetiza los hallazgos principales observables en los datos. Incluye cifras clave y distribuciones relevantes.",
         "observacion": "Describe patrones, tendencias y distribuciones identificables en los datos. Presenta porcentajes y valores cuando sea pertinente.",
         "conclusion": "Resume los datos presentados de manera objetiva, destacando las características principales del conjunto de datos."
     }
 
-    prompt = f"""Eres un analista de datos educativos especializado en la redacción de informes técnicos profesionales.
+    prompt = f"""
 
-CONTEXTO DEL PROYECTO:
+Contexto:
 {contexto if contexto else "Análisis de datos de proyecto educativo"}
-
-INFORMACIÓN DEL DATASET:
-{info_basica}
 
 TAREA:
 {instrucciones_seccion[seccion]}
-
-DIRECTRICES ESTRICTAS:
-1. OBJETIVIDAD: Describe únicamente lo observable en los datos, sin interpretaciones causales
-2. NO inferir éxito/fracaso basándote en distribuciones demográficas
-3. NO establecer correlaciones no evidenciadas
-4. USA lenguaje técnico, formal y neutral
-5. INCLUYE valores específicos cuando sea relevante (porcentajes, totales)
-6. EVITA adjetivos valorativos (exitoso, deficiente, prometedor)
-7. REDACTA en tercera persona
-
-PROHIBICIONES:
-- NO uses frases como "esto indica/sugiere/demuestra éxito"
-- NO relaciones género, edad u otras variables demográficas con calidad
-- NO hagas recomendaciones
-- NO uses expresiones especulativas
 
 DATOS A ANALIZAR:
 {json_str}
@@ -300,7 +276,7 @@ FORMATO DE SALIDA:
 - Sin bullets ni listas
 - Texto corrido y formal
 
-Genera únicamente el texto solicitado para la sección '{seccion}' del informe."""
+"""
 
     return call_gpt(prompt, modelo=modelo, max_tokens=tokens)
 
