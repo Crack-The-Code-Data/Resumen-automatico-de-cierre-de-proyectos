@@ -213,18 +213,21 @@ def call_gpt(
         logger.error(f"Error inesperado: {str(e)}")
         raise
 
+import pandas as pd
+from typing import Union, Dict, List
+
 def analyze_dataframe(
-    df: pd.DataFrame,
+    df: Union[pd.DataFrame, Dict, List[Dict], List],
     seccion: str = "observacion",
     contexto: str = "",
     tokens: int = 1000,
     modelo: str = "gpt-4o-mini"
 ) -> str:
     """
-    Analiza un DataFrame y genera texto profesional para informes educativos.
+    Analiza un DataFrame, diccionario o lista de diccionarios y genera texto profesional para informes educativos.
 
     Args:
-        df (pd.DataFrame): DataFrame a analizar.
+        df (pd.DataFrame | Dict | List[Dict] | List): Datos a analizar.
         seccion (str): Tipo de sección del informe ('introduccion', 'resumen', 'observacion', 'conclusion').
         contexto (str): Contexto adicional sobre los datos (nombre del proyecto, período, etc.).
         tokens (int): Máximo de tokens en la respuesta.
@@ -234,11 +237,32 @@ def analyze_dataframe(
         str: Texto generado para el informe.
 
     Raises:
-        ValueError: Si el DataFrame está vacío o la sección no es válida.
+        ValueError: Si los datos están vacíos, el tipo no es válido o la sección no es válida.
     """
-    if df.empty:
-        raise ValueError("El DataFrame está vacío. No hay datos para analizar.")
+    # Convertir entrada a DataFrame si es necesario
+    if isinstance(df, list):
+        if len(df) == 0:
+            raise ValueError("La lista está vacía. No hay información para analizar.")
+        # Si es una lista de diccionarios
+        df = pd.DataFrame(df)
+    elif isinstance(df, dict):
+        # Si es un diccionario simple, convertirlo a DataFrame
+        try:
+            df = pd.DataFrame([df])  # Si es un solo registro
+        except:
+            df = pd.DataFrame(df)  # Si es dict con listas
+    elif isinstance(df, pd.DataFrame):
+        # Ya es DataFrame, verificar que no esté vacío
+        if df.empty:
+            raise ValueError("El DataFrame está vacío. No hay datos para analizar.")
+    else:
+        raise ValueError("El argumento debe ser un DataFrame, diccionario o lista de diccionarios.")
     
+    # Validar que el DataFrame resultante no esté vacío
+    if df.empty:
+        raise ValueError("Los datos están vacíos. No hay información para analizar.")
+    
+    # Validar sección
     secciones_validas = ["introduccion", "resumen", "observacion", "conclusion"]
     if seccion not in secciones_validas:
         raise ValueError(f"Sección debe ser una de: {', '.join(secciones_validas)}")
@@ -247,8 +271,7 @@ def analyze_dataframe(
     try:
         json_str = df.to_json(orient="records", lines=False, force_ascii=False)
     except Exception as e:
-        logger.error(f"Error al convertir DataFrame a JSON: {str(e)}")
-        raise
+        raise ValueError(f"Error al convertir datos a JSON: {str(e)}")
 
     # Instrucciones específicas según la sección
     instrucciones_seccion = {
@@ -270,8 +293,7 @@ DATOS A ANALIZAR:
 {json_str}
 
 FORMATO DE SALIDA:
-- Máximo 3 párrafos
-- Cada párrafo de 2-4 oraciones
+- Máximo 4 párrafos
 - Lenguaje profesional y técnico
 - Sin bullets ni listas
 - Texto corrido y formal
