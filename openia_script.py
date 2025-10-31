@@ -125,19 +125,62 @@ def _detectar_modelo_base(modelo: str) -> str:
 
 def guardar_registro_tokens(archivo: str = "registro_tokens.csv") -> None:
     """
-    Guarda el registro de tokens en un archivo CSV.
+    Guarda un RESUMEN agregado por ejecución en un archivo CSV.
+    Escribe SOLO una fila total por ejecución (sin filas parciales por modelo).
 
     Args:
         archivo (str): Nombre del archivo donde guardar el registro.
     """
     try:
-        df = pd.DataFrame(registro_tokens)
-        # Si el archivo existe, agregamos; si no, creamos uno nuevo
+        df_detalle = pd.DataFrame(registro_tokens)
+        if df_detalle.empty:
+            logger.info("No hay registros de tokens para guardar.")
+            return
+
+        # Normalizar fechas
+        if 'fecha_hora' in df_detalle.columns:
+            df_detalle['fecha_hora'] = pd.to_datetime(df_detalle['fecha_hora'], errors='coerce')
+
+        # Identificador de ejecución y ventana temporal
+        ejecucion_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+        fecha_inicio = (
+            df_detalle['fecha_hora'].min().strftime('%Y-%m-%d %H:%M:%S')
+            if 'fecha_hora' in df_detalle.columns and df_detalle['fecha_hora'].notna().any()
+            else None
+        )
+        fecha_fin = (
+            df_detalle['fecha_hora'].max().strftime('%Y-%m-%d %H:%M:%S')
+            if 'fecha_hora' in df_detalle.columns and df_detalle['fecha_hora'].notna().any()
+            else None
+        )
+
+        # Etiqueta de modelo: único si hay uno; si hay varios, listar separados por coma
+        modelos_unicos = sorted(df_detalle['modelo'].dropna().astype(str).unique())
+        modelo_label = modelos_unicos[0] if len(modelos_unicos) == 1 else ",".join(modelos_unicos)
+
+        # Fila total ÚNICA por ejecución
+        df_resumen = pd.DataFrame([
+            {
+                'modelo': modelo_label,
+                'input_tokens': int(df_detalle['input_tokens'].sum()),
+                'output_tokens': int(df_detalle['output_tokens'].sum()),
+                'costo_usd': float(df_detalle['costo_usd'].sum()),
+                'num_llamadas': int(df_detalle.shape[0]),
+                'ejecucion_id': ejecucion_id,
+                'fecha_inicio': fecha_inicio,
+                'fecha_fin': fecha_fin,
+            }
+        ])
+
+        # Persistir: anexar al archivo de resúmenes
         if os.path.exists(archivo):
             df_existente = pd.read_csv(archivo)
-            df = pd.concat([df_existente, df], ignore_index=True)
-        df.to_csv(archivo, index=False)
-        logger.info(f"Registro de tokens guardado en {archivo}")
+            df_final = pd.concat([df_existente, df_resumen], ignore_index=True)
+        else:
+            df_final = df_resumen
+
+        df_final.to_csv(archivo, index=False)
+        logger.info(f"Resumen de tokens (por ejecución) guardado en {archivo} con ejecucion_id={ejecucion_id}")
     except Exception as e:
         logger.error(f"Error al guardar registro de tokens: {str(e)}")
 
@@ -146,7 +189,7 @@ def call_gpt(
     prompt: str,
     modelo: str = "gpt-4o-mini",
     max_tokens: int = 1500,
-    temperature: float = 0.7,
+    temperature: float = 0.6,
     system_prompt: Optional[str] = None
 ) -> str:
     """

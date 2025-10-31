@@ -436,6 +436,359 @@ def numerar_titulos_existentes(doc: Document) -> None:
 
 
 # ============================================================================
+# FORMATO CONDICIONAL PARA TABLAS - Funciones auxiliares
+# ============================================================================
+
+
+def set_cell_background(cell, color: str):
+    """
+    Establece color de fondo de una celda.
+    
+    Args:
+        cell: Celda de la tabla
+        color: Color en formato hexadecimal sin '#' (ej: 'FF0000' para rojo)
+    """
+    shading_elm = OxmlElement('w:shd')
+    shading_elm.set(qn('w:fill'), color)
+    cell._element.get_or_add_tcPr().append(shading_elm)
+
+
+# ==================== FORMATOS CONDICIONALES ====================
+
+def formato_filas_alternadas(tabla, color1='FFFFFF', color2='F0F0F0', desde_fila=1):
+    """
+    Aplica colores alternados a las filas (zebra striping).
+    
+    Args:
+        tabla: Tabla de Word retornada por insertar_tabla()
+        color1: Color para filas pares (hexadecimal sin #)
+        color2: Color para filas impares (hexadecimal sin #)
+        desde_fila: Desde qué fila empezar (1=después del encabezado)
+    
+    Ejemplo:
+        >>> tabla = insertar_tabla(doc, df, "Mi Tabla")
+        >>> formato_filas_alternadas(tabla, 'FFFFFF', 'E8F4F8')
+    """
+    for i, row in enumerate(tabla.rows[desde_fila:], start=desde_fila):
+        color = color1 if (i - desde_fila) % 2 == 0 else color2
+        for cell in row.cells:
+            set_cell_background(cell, color)
+
+
+def formato_valores_positivos_negativos(tabla, df, columnas=None, 
+                                       color_positivo='C6EFCE', 
+                                       color_negativo='FFC7CE',
+                                       color_cero='FFFFFF'):
+    """
+    Colorea celdas según si el valor es positivo, negativo o cero.
+    
+    Args:
+        tabla: Tabla de Word retornada por insertar_tabla()
+        df: DataFrame original usado para crear la tabla
+        columnas: Lista de nombres de columnas a aplicar formato (None=todas)
+        color_positivo: Color para valores > 0
+        color_negativo: Color para valores < 0
+        color_cero: Color para valores = 0
+    
+    Ejemplo:
+        >>> tabla = insertar_tabla(doc, df, "Ventas")
+        >>> formato_valores_positivos_negativos(tabla, df, columnas=['Variación', 'Margen'])
+    """
+    if columnas is None:
+        columnas = df.columns
+    
+    col_indices = [list(df.columns).index(col) for col in columnas if col in df.columns]
+    
+    for i, (_, row) in enumerate(df.iterrows(), start=1):
+        for col_idx in col_indices:
+            try:
+                valor = float(row.iloc[col_idx])
+                if valor > 0:
+                    color = color_positivo
+                elif valor < 0:
+                    color = color_negativo
+                else:
+                    color = color_cero
+                set_cell_background(tabla.rows[i].cells[col_idx], color)
+            except (ValueError, TypeError):
+                pass
+
+
+def formato_por_umbral(tabla, df, columna, umbrales, colores):
+    """
+    Colorea celdas según umbrales definidos.
+    
+    Args:
+        tabla: Tabla de Word
+        df: DataFrame original
+        columna: Nombre de la columna a aplicar formato
+        umbrales: Lista de valores umbral (ordenados de menor a mayor)
+        colores: Lista de colores (len(umbrales) + 1)
+    
+    Ejemplo:
+        >>> # Rojo<50, Amarillo 50-80, Verde claro 80-90, Verde oscuro >90
+        >>> tabla = insertar_tabla(doc, df, "Rendimiento")
+        >>> formato_por_umbral(tabla, df, 'Porcentaje', 
+        ...                    umbrales=[50, 80, 90],
+        ...                    colores=['FFC7CE', 'FFEB9C', 'C6EFCE', '92D050'])
+    """
+    if columna not in df.columns:
+        return
+    
+    col_idx = list(df.columns).index(columna)
+    
+    for i, (_, row) in enumerate(df.iterrows(), start=1):
+        try:
+            valor = float(row.iloc[col_idx])
+            color_idx = 0
+            for umbral in umbrales:
+                if valor >= umbral:
+                    color_idx += 1
+            set_cell_background(tabla.rows[i].cells[col_idx], colores[color_idx])
+        except (ValueError, TypeError):
+            pass
+
+
+def formato_top_bottom(tabla, df, columna, top_n=3, color_top='C6EFCE', 
+                       bottom_n=3, color_bottom='FFC7CE'):
+    """
+    Resalta los N valores más altos y más bajos de una columna.
+    
+    Args:
+        tabla: Tabla de Word
+        df: DataFrame original
+        columna: Nombre de la columna
+        top_n: Cantidad de valores máximos a resaltar
+        color_top: Color para valores máximos
+        bottom_n: Cantidad de valores mínimos a resaltar
+        color_bottom: Color para valores mínimos
+    
+    Ejemplo:
+        >>> tabla = insertar_tabla(doc, df, "Ranking")
+        >>> formato_top_bottom(tabla, df, 'Ventas', top_n=5, bottom_n=3)
+    """
+    if columna not in df.columns:
+        return
+    
+    col_idx = list(df.columns).index(columna)
+    
+    try:
+        valores_numericos = pd.to_numeric(df[columna], errors='coerce')
+        top_indices = valores_numericos.nlargest(top_n).index
+        bottom_indices = valores_numericos.nsmallest(bottom_n).index
+        
+        for i, idx in enumerate(df.index, start=1):
+            if idx in top_indices:
+                set_cell_background(tabla.rows[i].cells[col_idx], color_top)
+            elif idx in bottom_indices:
+                set_cell_background(tabla.rows[i].cells[col_idx], color_bottom)
+    except:
+        pass
+
+
+def formato_escala_color(tabla, df, columna, color_min='FFC7CE', 
+                        color_max='C6EFCE', color_medio='FFEB9C'):
+    """
+    Aplica gradiente de color según el valor (mapa de calor).
+    
+    Args:
+        tabla: Tabla de Word
+        df: DataFrame original
+        columna: Nombre de la columna
+        color_min: Color para valor mínimo (hex)
+        color_max: Color para valor máximo (hex)
+        color_medio: Color para valor medio (hex)
+    
+    Ejemplo:
+        >>> tabla = insertar_tabla(doc, df, "Temperatura")
+        >>> formato_escala_color(tabla, df, 'Temperatura', 
+        ...                      color_min='5B9BD5',  # Azul
+        ...                      color_max='FF0000',  # Rojo
+        ...                      color_medio='FFFF00') # Amarillo
+    """
+    if columna not in df.columns:
+        return
+    
+    col_idx = list(df.columns).index(columna)
+    
+    try:
+        valores = pd.to_numeric(df[columna], errors='coerce')
+        min_val = valores.min()
+        max_val = valores.max()
+        
+        def hex_to_rgb(hex_color):
+            return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        
+        def rgb_to_hex(rgb):
+            return '%02x%02x%02x' % rgb
+        
+        rgb_min = hex_to_rgb(color_min)
+        rgb_medio = hex_to_rgb(color_medio)
+        rgb_max = hex_to_rgb(color_max)
+        
+        for i, (_, row) in enumerate(df.iterrows(), start=1):
+            try:
+                valor = float(row.iloc[col_idx])
+                if pd.notna(valor):
+                    # Normalizar valor entre 0 y 1
+                    if max_val != min_val:
+                        ratio = (valor - min_val) / (max_val - min_val)
+                    else:
+                        ratio = 0.5
+                    
+                    # Interpolación de color
+                    if ratio < 0.5:
+                        r = int(rgb_min[0] + (rgb_medio[0] - rgb_min[0]) * (ratio * 2))
+                        g = int(rgb_min[1] + (rgb_medio[1] - rgb_min[1]) * (ratio * 2))
+                        b = int(rgb_min[2] + (rgb_medio[2] - rgb_min[2]) * (ratio * 2))
+                    else:
+                        r = int(rgb_medio[0] + (rgb_max[0] - rgb_medio[0]) * ((ratio - 0.5) * 2))
+                        g = int(rgb_medio[1] + (rgb_max[1] - rgb_medio[1]) * ((ratio - 0.5) * 2))
+                        b = int(rgb_medio[2] + (rgb_max[2] - rgb_medio[2]) * ((ratio - 0.5) * 2))
+                    
+                    color = rgb_to_hex((r, g, b))
+                    set_cell_background(tabla.rows[i].cells[col_idx], color)
+            except (ValueError, TypeError):
+                pass
+    except:
+        pass
+
+
+def formato_columnas_especificas(tabla, df, columnas_colores):
+    """
+    Colorea columnas completas (excepto encabezado).
+    
+    Args:
+        tabla: Tabla de Word
+        df: DataFrame original
+        columnas_colores: Dict {nombre_columna: color_hex}
+    
+    Ejemplo:
+        >>> tabla = insertar_tabla(doc, df, "Datos")
+        >>> formato_columnas_especificas(tabla, df, {
+        ...     'Ventas': 'E7E6E6',
+        ...     'Margen': 'D9E1F2',
+        ...     'Beneficio': 'E2EFDA'
+        ... })
+    """
+    for columna, color in columnas_colores.items():
+        if columna in df.columns:
+            col_idx = list(df.columns).index(columna)
+            for i in range(1, len(tabla.rows)):
+                set_cell_background(tabla.rows[i].cells[col_idx], color)
+
+
+def formato_contiene_texto(tabla, df, columna, texto_color):
+    """
+    Colorea celdas que contienen cierto texto.
+    
+    Args:
+        tabla: Tabla de Word
+        df: DataFrame original
+        columna: Nombre de la columna
+        texto_color: Dict {texto_buscar: color_hex}
+    
+    Ejemplo:
+        >>> tabla = insertar_tabla(doc, df, "Estados")
+        >>> formato_contiene_texto(tabla, df, 'Estado', {
+        ...     'Aprobado': 'C6EFCE',
+        ...     'Rechazado': 'FFC7CE',
+        ...     'Pendiente': 'FFEB9C',
+        ...     'En Revisión': 'BDD7EE'
+        ... })
+    """
+    if columna not in df.columns:
+        return
+    
+    col_idx = list(df.columns).index(columna)
+    
+    for i, (_, row) in enumerate(df.iterrows(), start=1):
+        valor = str(row.iloc[col_idx])
+        for texto, color in texto_color.items():
+            if texto.lower() in valor.lower():
+                set_cell_background(tabla.rows[i].cells[col_idx], color)
+                break
+
+
+def formato_resaltar_duplicados(tabla, df, columna, color='FFEB9C'):
+    """
+    Resalta valores duplicados en una columna.
+    
+    Args:
+        tabla: Tabla de Word
+        df: DataFrame original
+        columna: Nombre de la columna
+        color: Color para duplicados
+    
+    Ejemplo:
+        >>> tabla = insertar_tabla(doc, df, "IDs")
+        >>> formato_resaltar_duplicados(tabla, df, 'ID', color='FFC7CE')
+    """
+    if columna not in df.columns:
+        return
+    
+    col_idx = list(df.columns).index(columna)
+    valores_duplicados = df[df.duplicated(subset=[columna], keep=False)][columna].unique()
+    
+    for i, (_, row) in enumerate(df.iterrows(), start=1):
+        if row.iloc[col_idx] in valores_duplicados:
+            set_cell_background(tabla.rows[i].cells[col_idx], color)
+
+
+def formato_encabezado_personalizado(tabla, color_fondo='2E3F5F', color_texto='FFFFFF'):
+    """
+    Aplica formato personalizado al encabezado de la tabla.
+    
+    Args:
+        tabla: Tabla de Word
+        color_fondo: Color de fondo del encabezado (hex)
+        color_texto: Color del texto (hex) - formato 'RRGGBB'
+    
+    Ejemplo:
+        >>> tabla = insertar_tabla(doc, df)
+        >>> formato_encabezado_personalizado(tabla, '2E3F5F', 'FFFFFF')
+    """
+    for cell in tabla.rows[0].cells:
+        set_cell_background(cell, color_fondo)
+        # Cambiar color del texto
+        for paragraph in cell.paragraphs:
+            for run in paragraph.runs:
+                r, g, b = int(color_texto[0:2], 16), int(color_texto[2:4], 16), int(color_texto[4:6], 16)
+                run.font.color.rgb = RGBColor(r, g, b)
+
+
+# ==================== PALETA DE COLORES CORPORATIVOS ====================
+
+class PaletaColores:
+    """Paleta de colores predefinida para formato condicional."""
+    
+    # Semáforo
+    VERDE = 'C6EFCE'
+    VERDE_OSCURO = '92D050'
+    AMARILLO = 'FFEB9C'
+    NARANJA = 'FFD966'
+    ROJO = 'FFC7CE'
+    ROJO_OSCURO = 'FF6B6B'
+    
+    # Azules corporativos
+    AZUL_CLARO = 'D9E1F2'
+    AZUL_MEDIO = 'B4C7E7'
+    AZUL_OSCURO = '8EA9DB'
+    AZUL_MARINO = '2E3F5F'
+    
+    # Grises
+    GRIS_MUY_CLARO = 'F8F9FA'
+    GRIS_CLARO = 'F0F0F0'
+    GRIS_MEDIO = 'D0D0D0'
+    GRIS_OSCURO = '6C757D'
+    
+    # Otros
+    MORADO_CLARO = 'E2EFDA'
+    ROSA = 'FCE4D6'
+    CYAN = 'D0F0FD'
+    BLANCO = 'FFFFFF'
+
+# ============================================================================
 # CLASE DOCUMENTBUILDER - Patrón Builder para construcción fluida de documentos
 # ============================================================================
 
