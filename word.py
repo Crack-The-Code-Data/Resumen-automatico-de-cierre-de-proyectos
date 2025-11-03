@@ -1,6 +1,7 @@
 from io import BytesIO
 from collections import OrderedDict
 from typing import List, Optional, Tuple, Dict, Any
+import pandas as pd
 
 # Librerías para manejo de documentos Word (python-docx)
 from docx import Document
@@ -448,9 +449,25 @@ def set_cell_background(cell, color: str):
         cell: Celda de la tabla
         color: Color en formato hexadecimal sin '#' (ej: 'FF0000' para rojo)
     """
-    shading_elm = OxmlElement('w:shd')
-    shading_elm.set(qn('w:fill'), color)
-    cell._element.get_or_add_tcPr().append(shading_elm)
+    # Normalizar color y aplicar sombreado de celda usando propiedades correctas
+    hex_color = (color or '').replace('#', '').upper()
+    if len(hex_color) != 6:
+        return
+
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+
+    # Eliminar sombreado previo si existe
+    existing_shd = tcPr.findall(qn('w:shd'))
+    for shd in existing_shd:
+        tcPr.remove(shd)
+
+    # Crear nuevo sombreado con atributos necesarios
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), hex_color)
+    tcPr.append(shd)
 
 
 # ==================== FORMATOS CONDICIONALES ====================
@@ -586,7 +603,7 @@ def formato_top_bottom(tabla, df, columna, top_n=3, color_top='C6EFCE',
         pass
 
 
-def formato_escala_color(tabla, df, columna, color_min='FFC7CE', 
+def formato_escala_color(tabla, df, columna, Vmin=None, Vmax=None, color_min='FFC7CE', 
                         color_max='C6EFCE', color_medio='FFEB9C'):
     """
     Aplica gradiente de color según el valor (mapa de calor).
@@ -613,8 +630,15 @@ def formato_escala_color(tabla, df, columna, color_min='FFC7CE',
     
     try:
         valores = pd.to_numeric(df[columna], errors='coerce')
-        min_val = valores.min()
-        max_val = valores.max()
+
+        if Vmin:
+            min_val = Vmin
+        else:
+            min_val = valores.min()
+        if Vmax:
+            max_val = Vmax
+        else:
+            max_val = valores.max()
         
         def hex_to_rgb(hex_color):
             return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
