@@ -28,31 +28,36 @@ registro_tokens = []
 
 # Diccionario de precios por modelo (USD por 1M tokens)
 PRECIOS_MODELOS = {
-    'gpt-4.1': {'input': 2.00, 'output': 8.00},
-    'gpt-4.1-mini': {'input': 0.40, 'output': 1.60},
-    'gpt-4.1-nano': {'input': 0.10, 'output': 0.40},
+    'gpt-5':           {'input': 1.25,  'output': 10.00},
+    'gpt-5-mini':      {'input': 0.25,  'output': 2.00},
+    'gpt-5-nano':      {'input': 0.05,  'output': 0.40},
+    'gpt-5-pro':       {'input': 15.00, 'output': 120.00},
+    'gpt-4.1':         {'input': 2.00,  'output': 8.00},
+    'gpt-4.1-mini':    {'input': 0.40,  'output': 1.60},
+    'gpt-4.1-nano':    {'input': 0.10,  'output': 0.40},
     'gpt-4.5-preview': {'input': 75.00, 'output': 150.00},
-    'gpt-4o': {'input': 2.50, 'output': 10.00},
-    'gpt-4o-mini': {'input': 0.15, 'output': 0.60},
+    'gpt-4o':          {'input': 2.50,  'output': 10.00},
+    'gpt-4o-mini':     {'input': 0.15,  'output': 0.60},
     'gpt-4o-mini-realtime-preview': {'input': 0.60, 'output': 2.40},
-    'gpt-4o-realtime-preview': {'input': 5.00, 'output': 20.00},
-    'gpt-4o-audio-preview': {'input': 2.50, 'output': 10.00},
-    'gpt-4o-mini-audio-preview': {'input': 0.15, 'output': 0.60},
-    'gpt-4o-search-preview': {'input': 2.50, 'output': 10.00},
-    'gpt-4o-mini-search-preview': {'input': 0.15, 'output': 0.60},
-    'o1': {'input': 15.00, 'output': 60.00},
-    'o1-pro': {'input': 150.00, 'output': 600.00},
-    'o3-pro': {'input': 20.00, 'output': 80.00},
-    'o3': {'input': 2.00, 'output': 8.00},
-    'o3-deep-research': {'input': 10.00, 'output': 40.00},
-    'o4-mini': {'input': 1.10, 'output': 4.40},
-    'o4-mini-deep-research': {'input': 2.00, 'output': 8.00},
-    'o3-mini': {'input': 1.10, 'output': 4.40},
-    'o1-mini': {'input': 1.10, 'output': 4.40},
-    'codex-mini-latest': {'input': 1.50, 'output': 6.00},
-    'computer-use-preview': {'input': 3.00, 'output': 12.00},
-    'gpt-image-1': {'input': 5.00, 'output': 1.25},
+    'gpt-4o-realtime-preview':      {'input': 5.00,  'output': 20.00},
+    'gpt-4o-audio-preview':         {'input': 2.50,  'output': 10.00},
+    'gpt-4o-mini-audio-preview':    {'input': 0.15,  'output': 0.60},
+    'gpt-4o-search-preview':        {'input': 2.50,  'output': 10.00},
+    'gpt-4o-mini-search-preview':   {'input': 0.15,  'output': 0.60},
+    'o1':                            {'input': 15.00, 'output': 60.00},
+    'o1-pro':                        {'input': 150.00,'output': 600.00},
+    'o3':                            {'input': 2.00,  'output': 8.00},
+    'o3-pro':                        {'input': 20.00, 'output': 80.00},
+    'o3-deep-research':              {'input': 10.00, 'output': 40.00},
+    'o4-mini':                       {'input': 1.10,  'output': 4.40},
+    'o4-mini-deep-research':         {'input': 2.00,  'output': 8.00},
+    'o3-mini':                       {'input': 1.10,  'output': 4.40},
+    'o1-mini':                       {'input': 1.10,  'output': 4.40},
+    'codex-mini-latest':             {'input': 1.50,  'output': 6.00},
+    'computer-use-preview':          {'input': 3.00,  'output': 12.00},
+    'gpt-image-1':                   {'input': 5.00,  'output': 1.25},
 }
+
 
 # Prompts del sistema almacenados como constantes
 SYSTEM_PROMPT = """
@@ -75,20 +80,14 @@ DIRECTRICES ESTRICTAS:
    - Utiliza voz pasiva cuando sea pertinente
    - Mantén un tono formal y académico
 
-3. ESTRUCTURA DE REDACCIÓN:
-   - Para introducción: Contextualiza el proyecto y sus objetivos medibles
-   - Para resúmenes: Sintetiza hallazgos clave sin valoraciones
-   - Para observaciones: Presenta tendencias y patrones identificables
-   - Para conclusiones: Resume datos presentados sin extrapolaciones
-
-4. PROHIBICIONES EXPLÍCITAS:
+3. PROHIBICIONES EXPLÍCITAS:
    - NO inferir causalidad sin evidencia
    - NO hacer juicios de valor sobre los datos
    - NO relacionar variables demográficas con éxito/fracaso
    - NO incluir recomendaciones no solicitadas
    - NO usar adjetivos valorativos (exitoso, deficiente, prometedor)
 
-5. FORMATO DE RESPUESTA:
+4. FORMATO DE RESPUESTA:
    - Párrafos concisos de 3-5 oraciones
    - Incluye datos específicos cuando sea relevante (porcentajes, cifras)
 
@@ -189,7 +188,7 @@ def call_gpt(
     prompt: str,
     modelo: str = "gpt-4o-mini",
     max_tokens: int = 1500,
-    temperature: float = 0.6,
+    temperature: float = 0.5,
     system_prompt: Optional[str] = None
 ) -> str:
     """
@@ -215,15 +214,29 @@ def call_gpt(
         system_prompt = SYSTEM_PROMPT
 
     try:
-        response = openai.chat.completions.create(
-            model=modelo,
-            messages=[
+    # Preparar argumentos para la llamada según el modelo
+        kwargs = {
+            "model": modelo,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
+        }
+
+        # Modelos GPT-5 usan 'max_completion_tokens'
+        if modelo.startswith("gpt-5"):
+            kwargs["max_completion_tokens"] = max_tokens
+
+            # Algunos GPT-5 (como gpt-5-nano) no aceptan temperatura personalizada
+            if not modelo.endswith("nano"):
+                kwargs["temperature"] = temperature
+        else:
+            # Modelos anteriores (GPT-4 y 4o)
+            kwargs["max_tokens"] = max_tokens
+            kwargs["temperature"] = temperature
+
+        # Llamada a la API
+        response = openai.chat.completions.create(**kwargs)
 
         result = response.choices[0].message.content.strip()
 
@@ -318,8 +331,8 @@ def analyze_dataframe(
 
     # Instrucciones específicas según la sección
     instrucciones_seccion = {
-        "introduccion": "Redacta una introducción contextual para la seccion basada en los datos disponibles",
-        "resumen": "Sintetiza los hallazgos principales observables en los datos. Incluye cifras clave y distribuciones relevantes.",
+        "introduccion": "Contextualiza el proyecto y sus objetivos medibles: Redacta una introducción para la seccion basada en los datos disponibles",
+        "resumen": "Sintetiza hallazgos clave sin valoraciones: Sintetiza los hallazgos principales observables en los datos. Incluye cifras clave y distribuciones relevantes.",
         "observacion": "Describe patrones, tendencias y distribuciones identificables en los datos. Presenta porcentajes y valores cuando sea pertinente.",
         "conclusion": "Resume los datos presentados de manera objetiva, destacando las características principales del conjunto de datos."
     }
