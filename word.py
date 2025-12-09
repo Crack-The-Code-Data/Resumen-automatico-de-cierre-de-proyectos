@@ -5,7 +5,7 @@ import pandas as pd
 
 # Librerías para manejo de documentos Word (python-docx)
 from docx import Document
-from docx.shared import Inches, Pt, RGBColor
+from docx.shared import Inches, Pt, RGBColor, Cm
 from docx.text.paragraph import Paragraph
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -116,7 +116,7 @@ def agregar_parrafo(doc: Document, texto: str) -> None:
     run.font.size = Pt(8)
 
 
-def insertar_figura(doc: Document, figura, titulo: Optional[str] = None, pie: Optional[str] = None) -> None:
+def insertar_figura(doc: Document, figura, titulo: Optional[str] = None, pie: Optional[str] = None, ancho_cm: Optional[float] = None, alto_cm: Optional[float] = None) -> None:
     if titulo:
         agregar_titulo(doc, titulo, 3)
     imagen_stream = BytesIO()
@@ -125,7 +125,17 @@ def insertar_figura(doc: Document, figura, titulo: Optional[str] = None, pie: Op
 
     p = doc.add_paragraph()
     run = p.add_run()
-    run.add_picture(imagen_stream, width=Inches(5.5))
+
+    # Determinar dimensiones de la imagen
+    if ancho_cm is not None and alto_cm is not None:
+        run.add_picture(imagen_stream, width=Cm(ancho_cm), height=Cm(alto_cm))
+    elif ancho_cm is not None:
+        run.add_picture(imagen_stream, width=Cm(ancho_cm))
+    elif alto_cm is not None:
+        run.add_picture(imagen_stream, height=Cm(alto_cm))
+    else:
+        run.add_picture(imagen_stream, width=Inches(5.5))
+
     p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
     imagen_stream.close()
 
