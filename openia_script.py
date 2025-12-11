@@ -276,14 +276,20 @@ def analyze_dataframe(
     df: Union[pd.DataFrame, Dict, List[Dict], List],
     seccion: str = "observacion",
     contexto: str = "",
-    tokens: int = 1000,
-    modelo: str = "gpt-4o-mini"
+    tokens: int = 1500,
+    modelo: str = "gpt-4o-mini",
+    temperature: float = 0.5
 ) -> str:
     """
     Analiza un DataFrame, diccionario o lista de diccionarios y genera texto profesional para informes educativos.
 
     Args:
-        df (pd.DataFrame | Dict | List[Dict] | List): Datos a analizar.
+        df (pd.DataFrame | Dict | List[Dict] | List): 
+            Datos a analizar. Puede ser:
+            - Un DataFrame
+            - Un diccionario simple
+            - Una biblioteca (dict con múltiples secciones)
+            - Una lista de diccionarios
         seccion (str): Tipo de sección del informe ('introduccion', 'resumen', 'observacion', 'conclusion').
         contexto (str): Contexto adicional sobre los datos (nombre del proyecto, período, etc.).
         tokens (int): Máximo de tokens en la respuesta.
@@ -295,46 +301,62 @@ def analyze_dataframe(
     Raises:
         ValueError: Si los datos están vacíos, el tipo no es válido o la sección no es válida.
     """
-    # Convertir entrada a DataFrame si es necesario
-    if isinstance(df, list):
-        if len(df) == 0:
-            raise ValueError("La lista está vacía. No hay información para analizar.")
-        # Si es una lista de diccionarios
-        df = pd.DataFrame(df)
-    elif isinstance(df, dict):
-        # Si es un diccionario simple, convertirlo a DataFrame
-        try:
-            df = pd.DataFrame([df])  # Si es un solo registro
-        except:
-            df = pd.DataFrame(df)  # Si es dict con listas
-    elif isinstance(df, pd.DataFrame):
-        # Ya es DataFrame, verificar que no esté vacío
-        if df.empty:
-            raise ValueError("El DataFrame está vacío. No hay datos para analizar.")
-    else:
-        raise ValueError("El argumento debe ser un DataFrame, diccionario o lista de diccionarios.")
+    import json
+    import numpy as np
     
-    # Validar que el DataFrame resultante no esté vacío
-    if df.empty:
-        raise ValueError("Los datos están vacíos. No hay información para analizar.")
-    
-    # Validar sección
+    # Validar sección primero
     secciones_validas = ["introduccion", "resumen", "observacion", "conclusion"]
     if seccion not in secciones_validas:
         raise ValueError(f"Sección debe ser una de: {', '.join(secciones_validas)}")
-
-    # Convertir DataFrame a JSON
-    try:
-        json_str = df.to_json(orient="records", lines=False, force_ascii=False)
-    except Exception as e:
-        raise ValueError(f"Error al convertir datos a JSON: {str(e)}")
-
+    
+    json_str = None
+    
+    # CASO 1: Es un DataFrame
+    if isinstance(df, pd.DataFrame):
+        if df.empty:
+            raise ValueError("El DataFrame está vacío. No hay datos para analizar.")
+        
+        # Convertir DataFrame a JSON
+        try:
+            json_str = df.to_json(orient="records", lines=False, force_ascii=False)
+        except Exception as e:
+            raise ValueError(f"Error al convertir DataFrame a JSON: {str(e)}")
+    
+    # CASO 2: Es una lista
+    elif isinstance(df, list):
+        if len(df) == 0:
+            raise ValueError("La lista está vacía. No hay información para analizar.")
+        
+        # Convertir lista directamente a JSON
+        try:
+            json_str = json.dumps(df, ensure_ascii=False, default=str)
+        except Exception as e:
+            raise ValueError(f"Error al convertir lista a JSON: {str(e)}")
+    
+    # CASO 3: Es un diccionario (puede ser biblioteca o dict simple)
+    elif isinstance(df, dict):
+        if len(df) == 0:
+            raise ValueError("El diccionario está vacío. No hay información para analizar.")
+        
+        # Convertir diccionario directamente a JSON (sin importar si es biblioteca o no)
+        try:
+            json_str = json.dumps(df, ensure_ascii=False, indent=2, default=str)
+        except Exception as e:
+            raise ValueError(f"Error al convertir diccionario a JSON: {str(e)}")
+    
+    else:
+        raise ValueError("El argumento debe ser un DataFrame, diccionario o lista de diccionarios.")
+    
+    # Validar que tengamos datos
+    if not json_str or json_str in ["{}", "[]", "null"]:
+        raise ValueError("Los datos están vacíos. No hay información para analizar.")
+    
     # Instrucciones específicas según la sección
     instrucciones_seccion = {
         "introduccion": "Contextualiza el proyecto y sus objetivos medibles: Redacta una introducción para la seccion basada en los datos disponibles",
         "resumen": "Sintetiza hallazgos clave sin valoraciones: Sintetiza los hallazgos principales observables en los datos. Incluye cifras clave y distribuciones relevantes.",
         "observacion": "Describe patrones, tendencias y distribuciones identificables en los datos. Presenta porcentajes y valores cuando sea pertinente.",
-        "conclusion": "Resume los datos presentados de manera objetiva, destacando las características principales del conjunto de datos."
+        "conclusion": "Realiza una conclusion del proyecto educativo y sus datos presentados de manera objetiva, destacando las características principales."
     }
 
     prompt = f"""
@@ -356,7 +378,7 @@ FORMATO DE SALIDA:
 
 """
 
-    return call_gpt(prompt, modelo=modelo, max_tokens=tokens)
+    return call_gpt(prompt, modelo=modelo, max_tokens=tokens, temperature=temperature)
 
 
 def insight_list(

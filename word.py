@@ -991,7 +991,7 @@ class DocumentBuilder:
         return self
 
     def figura(self, figura, titulo: Optional[str] = None,
-               pie: Optional[str] = None) -> 'DocumentBuilder':
+               pie: Optional[str] = None, ancho_cm: Optional[float] = None, alto_cm: Optional[float] = None) -> 'DocumentBuilder':
         """
         Inserta una figura (matplotlib) en el documento.
 
@@ -1004,7 +1004,7 @@ class DocumentBuilder:
             self para permitir encadenamiento de métodos
         """
         try:
-            insertar_figura(self.doc, figura, titulo, pie)
+            insertar_figura(self.doc, figura, titulo, pie, ancho_cm, alto_cm)
             self._historial.append(f"Figura: {titulo if titulo else 'sin título'}")
         except Exception as e:
             self.parrafo(f"[Error al insertar figura: {str(e)}]")
